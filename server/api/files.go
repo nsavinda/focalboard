@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,11 +19,33 @@ import (
 	"github.com/mattermost/focalboard/server/model"
 
 	"github.com/mattermost/focalboard/server/services/audit"
+
 	mmModel "github.com/mattermost/mattermost-server/v6/model"
 
 	"github.com/mattermost/mattermost-server/v6/shared/mlog"
-	"github.com/mattermost/mattermost-server/v6/shared/web"
 )
+
+var UnsafeContentTypes = [...]string{
+	"application/javascript",
+	"application/ecmascript",
+	"text/javascript",
+	"text/ecmascript",
+	"application/x-javascript",
+	"text/html",
+}
+
+var MediaContentTypes = [...]string{
+	"image/jpeg",
+	"image/png",
+	"image/bmp",
+	"image/gif",
+	"image/tiff",
+	"video/avi",
+	"video/mpeg",
+	"video/mp4",
+	"audio/mpeg",
+	"audio/wav",
+}
 
 // FileUploadResponse is the response to a file upload
 // swagger:model
@@ -144,9 +168,80 @@ func (a *API) handleServeFile(w http.ResponseWriter, r *http.Request) {
 		_ = a.app.MoveFile(board.ChannelID, board.TeamID, boardID, filename)
 	}
 
+	if err != nil {
+		// if err is still not nil then it is an error other than `not found` so we must
+		// return the error to the requestor.  fileReader and Fileinfo are nil in this case.
+		a.errorResponse(w, r, err)
+	}
+
 	defer fileReader.Close()
-	web.WriteFileResponse(filename, fileInfo.MimeType, fileInfo.Size, time.Now(), "", fileReader, false, w, r)
+
+	mimeType := ""
+	var fileSize int64
+	if fileInfo != nil {
+		mimeType = fileInfo.MimeType
+		fileSize = fileInfo.Size
+	}
+	writeFileResponse(filename, mimeType, fileSize, time.Now(), "", fileReader, false, w, r)
 	auditRec.Success()
+}
+
+func writeFileResponse(filename string, contentType string, contentSize int64,
+	lastModification time.Time, webserverMode string, fileReader io.ReadSeeker, forceDownload bool, w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if contentSize > 0 {
+		contentSizeStr := strconv.Itoa(int(contentSize))
+		if webserverMode == "gzip" {
+			w.Header().Set("X-Uncompressed-Content-Length", contentSizeStr)
+		} else {
+			w.Header().Set("Content-Length", contentSizeStr)
+		}
+	}
+
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	} else {
+		for _, unsafeContentType := range UnsafeContentTypes {
+			if strings.HasPrefix(contentType, unsafeContentType) {
+				contentType = "text/plain"
+				break
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", contentType)
+
+	var toDownload bool
+	if forceDownload {
+		toDownload = true
+	} else {
+		isMediaType := false
+
+		for _, mediaContentType := range MediaContentTypes {
+			if strings.HasPrefix(contentType, mediaContentType) {
+				isMediaType = true
+				break
+			}
+		}
+
+		toDownload = !isMediaType
+	}
+
+	filename = url.PathEscape(filename)
+
+	if toDownload {
+		w.Header().Set("Content-Disposition", "attachment;filename=\""+filename+"\"; filename*=UTF-8''"+filename)
+	} else {
+		w.Header().Set("Content-Disposition", "inline;filename=\""+filename+"\"; filename*=UTF-8''"+filename)
+	}
+
+	// prevent file links from being embedded in iframes
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "Frame-ancestors 'none'")
+
+	http.ServeContent(w, r, filename, lastModification, fileReader)
 }
 
 func (a *API) getFileInfo(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +393,7 @@ func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	auditRec.AddMeta("teamID", board.TeamID)
 	auditRec.AddMeta("filename", handle.Filename)
 
-	fileID, err := a.app.SaveFile(file, board.TeamID, boardID, handle.Filename)
+	fileID, err := a.app.SaveFile(file, board.TeamID, boardID, handle.Filename, board.IsTemplate)
 	if err != nil {
 		a.errorResponse(w, r, err)
 		return

@@ -20,18 +20,6 @@ const (
 	descClause     = " DESC "
 )
 
-type ErrEmptyBoardID struct{}
-
-func (re ErrEmptyBoardID) Error() string {
-	return "boardID is empty"
-}
-
-type ErrLimitExceeded struct{ max int }
-
-func (le ErrLimitExceeded) Error() string {
-	return fmt.Sprintf("limit exceeded (max=%d)", le.max)
-}
-
 func (s *SQLStore) timestampToCharField(name string, as string) string {
 	switch s.dbType {
 	case model.MysqlDBType:
@@ -240,8 +228,8 @@ func (s *SQLStore) blocksFromRows(rows *sql.Rows) ([]*model.Block, error) {
 }
 
 func (s *SQLStore) insertBlock(db sq.BaseRunner, block *model.Block, userID string) error {
-	if block.BoardID == "" {
-		return ErrEmptyBoardID{}
+	if err := block.IsValid(); err != nil {
+		return fmt.Errorf("error validating block %s: %w", block.ID, err)
 	}
 
 	fieldsJSON, err := json.Marshal(block.Fields)
@@ -348,8 +336,8 @@ func (s *SQLStore) patchBlocks(db sq.BaseRunner, blockPatches *model.BlockPatchB
 
 func (s *SQLStore) insertBlocks(db sq.BaseRunner, blocks []*model.Block, userID string) error {
 	for _, block := range blocks {
-		if block.BoardID == "" {
-			return ErrEmptyBoardID{}
+		if err := block.IsValid(); err != nil {
+			return fmt.Errorf("error validating block %s: %w", block.ID, err)
 		}
 	}
 	for i := range blocks {
@@ -363,6 +351,14 @@ func (s *SQLStore) insertBlocks(db sq.BaseRunner, blocks []*model.Block, userID 
 
 func (s *SQLStore) deleteBlock(db sq.BaseRunner, blockID string, modifiedBy string) error {
 	return s.deleteBlockAndChildren(db, blockID, modifiedBy, false)
+}
+
+func retrieveFileIDFromBlockFieldStorage(id string) string {
+	parts := strings.Split(id, ".")
+	if len(parts) < 1 {
+		return ""
+	}
+	return parts[0][1:]
 }
 
 func (s *SQLStore) deleteBlockAndChildren(db sq.BaseRunner, blockID string, modifiedBy string, keepChildren bool) error {
@@ -413,6 +409,30 @@ func (s *SQLStore) deleteBlockAndChildren(db sq.BaseRunner, blockID string, modi
 
 	if _, err := insertQuery.Exec(); err != nil {
 		return err
+	}
+
+	// fileId and attachmentId shoudn't exist at the same time
+	fileID := ""
+	fileIDWithExtention, fileIDExists := block.Fields["fileId"]
+	if fileIDExists {
+		fileID = retrieveFileIDFromBlockFieldStorage(fileIDWithExtention.(string))
+	}
+
+	if fileID == "" {
+		attachmentIDWithExtention, attachmentIDExists := block.Fields["attachmentId"]
+		if attachmentIDExists {
+			fileID = retrieveFileIDFromBlockFieldStorage(attachmentIDWithExtention.(string))
+		}
+	}
+
+	if fileID != "" {
+		deleteFileInfoQuery := s.getQueryBuilder(db).
+			Update("FileInfo").
+			Set("DeleteAt", model.GetMillis()).
+			Where(sq.Eq{"id": fileID})
+		if _, err := deleteFileInfoQuery.Exec(); err != nil {
+			return err
+		}
 	}
 
 	deleteQuery := s.getQueryBuilder(db).
@@ -931,6 +951,44 @@ func (s *SQLStore) deleteBlockChildren(db sq.BaseRunner, boardID string, parentI
 		return err
 	}
 
+	fileDeleteQuery := s.getQueryBuilder(db).
+		Select(s.blockFields("")...).
+		From(s.tablePrefix + "blocks").
+		Where(sq.Eq{"board_id": boardID})
+
+	rows, err := fileDeleteQuery.Query()
+	if err != nil {
+		return err
+	}
+	defer s.CloseRows(rows)
+	blocks, err := s.blocksFromRows(rows)
+	if err != nil {
+		return err
+	}
+
+	fileIDs := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		fileIDWithExtention, fileIDExists := block.Fields["fileId"]
+		if fileIDExists {
+			fileIDs = append(fileIDs, retrieveFileIDFromBlockFieldStorage(fileIDWithExtention.(string)))
+		}
+		attachmentIDWithExtention, attachmentIDExists := block.Fields["attachmentId"]
+		if attachmentIDExists {
+			fileIDs = append(fileIDs, retrieveFileIDFromBlockFieldStorage(attachmentIDWithExtention.(string)))
+		}
+	}
+
+	if len(fileIDs) > 0 {
+		deleteFileInfoQuery := s.getQueryBuilder(db).
+			Update("FileInfo").
+			Set("DeleteAt", model.GetMillis()).
+			Where(sq.Eq{"id": fileIDs})
+
+		if _, err := deleteFileInfoQuery.Exec(); err != nil {
+			return err
+		}
+	}
+
 	deleteQuery := s.getQueryBuilder(db).
 		Delete(s.tablePrefix + "blocks").
 		Where(sq.Eq{"board_id": boardID})
@@ -948,7 +1006,7 @@ func (s *SQLStore) deleteBlockChildren(db sq.BaseRunner, boardID string, parentI
 
 func (s *SQLStore) undeleteBlockChildren(db sq.BaseRunner, boardID string, parentID string, modifiedBy string) error {
 	if boardID == "" {
-		return ErrEmptyBoardID{}
+		return model.ErrBlockEmptyBoardID
 	}
 
 	where := fmt.Sprintf("board_id='%s'", boardID)

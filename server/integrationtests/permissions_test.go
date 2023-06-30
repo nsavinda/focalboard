@@ -581,6 +581,35 @@ func TestPermissionsGetBoard(t *testing.T) {
 	})
 }
 
+func TestPermissionsGetBoardPublic(t *testing.T) {
+	ttCases := []TestCase{
+		{"/boards/{PRIVATE_BOARD_ID}?read_token=invalid", methodGet, "", userAnon, http.StatusUnauthorized, 0},
+		{"/boards/{PRIVATE_BOARD_ID}?read_token=valid", methodGet, "", userAnon, http.StatusUnauthorized, 1},
+		{"/boards/{PRIVATE_BOARD_ID}?read_token=invalid", methodGet, "", userNoTeamMember, http.StatusForbidden, 0},
+		{"/boards/{PRIVATE_BOARD_ID}?read_token=valid", methodGet, "", userTeamMember, http.StatusForbidden, 1},
+	}
+	t.Run("plugin", func(t *testing.T) {
+		th := SetupTestHelperPluginMode(t)
+		defer th.TearDown()
+		cfg := th.Server.Config()
+		cfg.EnablePublicSharedBoards = false
+		th.Server.UpdateAppConfig()
+		clients := setupClients(th)
+		testData := setupData(t, th)
+		runTestCases(t, ttCases, testData, clients)
+	})
+	t.Run("local", func(t *testing.T) {
+		th := SetupTestHelperLocalMode(t)
+		defer th.TearDown()
+		cfg := th.Server.Config()
+		cfg.EnablePublicSharedBoards = false
+		th.Server.UpdateAppConfig()
+		clients := setupLocalClients(th)
+		testData := setupData(t, th)
+		runTestCases(t, ttCases, testData, clients)
+	})
+}
+
 func TestPermissionsPatchBoard(t *testing.T) {
 	ttCases := []TestCase{
 		{"/boards/{PRIVATE_BOARD_ID}", methodPatch, "{\"title\": \"test\"}", userAnon, http.StatusUnauthorized, 0},
@@ -3346,7 +3375,7 @@ func TestPermissionsGetFile(t *testing.T) {
 		clients := setupClients(th)
 		testData := setupData(t, th)
 
-		newFileID, err := th.Server.App().SaveFile(bytes.NewBuffer([]byte("test")), "test-team", testData.privateBoard.ID, "test.png")
+		newFileID, err := th.Server.App().SaveFile(bytes.NewBuffer([]byte("test")), "test-team", testData.privateBoard.ID, "test.png", false)
 		require.NoError(t, err)
 
 		ttCases := ttCasesF()
@@ -3361,7 +3390,7 @@ func TestPermissionsGetFile(t *testing.T) {
 		clients := setupLocalClients(th)
 		testData := setupData(t, th)
 
-		newFileID, err := th.Server.App().SaveFile(bytes.NewBuffer([]byte("test")), "test-team", testData.privateBoard.ID, "test.png")
+		newFileID, err := th.Server.App().SaveFile(bytes.NewBuffer([]byte("test")), "test-team", testData.privateBoard.ID, "test.png", false)
 		require.NoError(t, err)
 
 		ttCases := ttCasesF()

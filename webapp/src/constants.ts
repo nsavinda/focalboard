@@ -37,8 +37,8 @@ class Constants {
     static readonly titleColumnId = '__title'
     static readonly badgesColumnId = '__badges'
 
-    static readonly versionString = '7.10.0'
-    static readonly versionDisplayString = 'Apr 2023'
+    static readonly versionString = '7.11.0'
+    static readonly versionDisplayString = 'May 2023'
 
     static readonly archiveHelpPage = 'https://docs.mattermost.com/boards/migrate-to-boards.html'
     static readonly imports = [
@@ -111,12 +111,12 @@ class Constants {
             displayName: 'Pусский',
         },
         {
-            code: 'zh-cn',
-            name: 'chinese',
+            code: 'zh-tw',
+            name: 'traditional-chinese',
             displayName: '中文 (繁體)',
         },
         {
-            code: 'zh-tw',
+            code: 'zh-cn',
             name: 'simplified-chinese',
             displayName: '中文 (简体)',
         },
